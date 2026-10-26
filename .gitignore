@@ -1,0 +1,9 @@
+node_modules
+.next
+.netlify
+.DS_Store
+.kilo/
+coverage
+.env*
+!.env.example
+npm-debug.log*
