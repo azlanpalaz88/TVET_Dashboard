@@ -6,13 +6,13 @@ import Papa from "papaparse";
 import {
   BarChart3, BookOpenCheck, BriefcaseBusiness, ChevronDown, CircleUserRound,
   Database, Download, FileDown, Filter, GraduationCap, HeartHandshake, Menu,
-  RefreshCw, ShieldCheck, Sparkles, Upload, X,
+  Microscope, RefreshCw, ShieldCheck, Sparkles, Upload, X,
 } from "lucide-react";
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { applyFilters, automatedInsights, cohortTrend, crossTab, distribution, itemMeans, metrics, programmeComparison, skillDomainMeans } from "@/lib/analytics";
+import { adjustHolm, applyFilters, automatedInsights, chiSquareEmployment, cohortTrend, crossTab, distribution, employmentOddsRatio, itemMeans, metrics, programmeComparison, skillDomainMeans } from "@/lib/analytics";
 import { createMapping, normalizeRows, parseCsvText, validateRecords } from "@/lib/importer";
 import { blankFilters, DataSource, filterFields, Filters, TvetRecord } from "@/lib/schema";
 import { percent, ringgit } from "@/lib/utils";
@@ -26,6 +26,7 @@ const NAV = [
   { id: "pekerjaan", label: "Hasil Pekerjaan", icon: BriefcaseBusiness },
   { id: "kesediaan", label: "Kesediaan Kebolehpasaran", icon: GraduationCap },
   { id: "halangan", label: "Halangan Kerjaya", icon: HeartHandshake },
+  { id: "analisis-data", label: "Analisis Data", icon: Microscope },
   { id: "penyelidikan", label: "Analitik Penyelidikan", icon: BookOpenCheck },
 ] as const;
 type ModuleId = (typeof NAV)[number]["id"];
@@ -129,6 +130,7 @@ export function ResearchDashboard() {
           {active === "pekerjaan" && <Employment records={filtered} />}
           {active === "kesediaan" && <Readiness records={filtered} />}
           {active === "halangan" && <Barriers records={filtered} />}
+          {active === "analisis-data" && <InferentialAnalysis records={filtered} source={source} />}
           {active === "penyelidikan" && <Research records={filtered} allRecords={records} />}
         </div>
       </main>
@@ -174,6 +176,46 @@ function Barriers({ records }: { records: TvetRecord[] }) {
   const items = itemMeans(records, "B");
   return <Module title="Halangan kerjaya" description="Pengalaman halangan yang dilaporkan sendiri; ‘Tidak berkenaan’ tidak dikodkan sebagai sifar."><div className="grid gap-4 md:grid-cols-3">{items.map((item, index) => <div className="panel border-t-4 p-5" style={{ borderTopColor: COLORS[index] }} key={item.field}><span className="eyebrow">{item.field}</span><h3 className="mt-2 min-h-12 font-bold">{item.name}</h3><div className="mt-5 text-4xl font-black">{item.value.toFixed(2)}<span className="text-base text-slate-400"> / 5</span></div><p className="mt-2 text-xs text-slate-500">n sah={item.n} · Tidak berkenaan/tiada data={item.na}</p></div>)}</div><SimpleBar title="Halangan utama" data={distribution(records, "main_barrier")} horizontal /><div className="grid gap-5 lg:grid-cols-3">{(["B01", "B02", "B03"] as const).map((field) => <StatBlock key={field} title={`Taburan ${field}`} data={distribution(records, field)} />)}</div></Module>;
 }
+
+function InferentialAnalysis({ records, source }: { records: TvetRecord[]; source: DataSource }) {
+  const factors = [
+    ["programme", "Program pengajian"], ["institution_type", "Jenis institusi"],
+    ["qualification", "Kelayakan"], ["graduation_year", "Kohort graduasi"],
+    ["state", "Negeri"], ["age_group", "Kumpulan umur"],
+    ["internship", "Latihan industri"], ["career_guidance", "Bimbingan kerjaya"],
+  ] as const;
+  const associations = adjustHolm(factors.map(([field, label]) => chiSquareEmployment(records, field, label)));
+  const oddsRatios = [
+    employmentOddsRatio(records, "Latihan industri", "Ya berbanding Tidak", (record) => record.internship === "Ya", (record) => record.internship === "Tidak"),
+    employmentOddsRatio(records, "Bimbingan kerjaya", "Ya berbanding Tidak", (record) => record.career_guidance === "Ya", (record) => record.career_guidance === "Tidak"),
+  ];
+  const significant = associations.filter((result) => result.adjustedPValue < .05).length;
+  const weakCells = associations.filter((result) => result.minimumExpected < 5).length;
+  return <Module title="Analisis data" description="Analisis inferensi eksploratori bagi hubungan faktor pendidikan dan profil dengan status bekerja.">
+    <div className={`rounded-2xl border p-4 text-sm ${source === "simulasi" ? "border-pink-200 bg-blush text-pink-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}><strong>{source === "simulasi" ? "ANALISIS DATA SIMULASI." : "Analisis eksploratori."}</strong> Keputusan menunjukkan hubungan statistik dalam sampel semasa sahaja. Ia tidak membuktikan sebab-akibat dan status bekerja bukan ukuran lengkap konstruk kebolehpasaran.</div>
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Kpi label="Sampel analisis" value={records.length.toLocaleString("ms-MY")} detail="Selepas penapis global" /><Kpi label="Ujian faktor" value={String(associations.length)} detail="Khi kuasa dua Pearson" /><Kpi label="Signifikan selepas Holm" value={String(significant)} detail="Ambang terlaras p < 0.05" accent={significant > 0} /><Kpi label="Amaran sel kecil" value={String(weakCells)} detail="Jangkaan minimum < 5" /></div>
+    <div className="panel overflow-hidden">
+      <div className="border-b p-5"><p className="eyebrow">Hasil primer</p><h3 className="mt-1 text-lg font-black">Hubungan dengan status bekerja</h3><p className="mt-1 text-xs leading-5 text-slate-500">Hasil dikodkan bekerja vs tidak bekerja. Nilai-p Holm mengawal family-wise error bagi lapan ujian. Cramér’s V melaporkan kekuatan hubungan.</p></div>
+      <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="bg-navy text-white"><tr><th className="p-3">Faktor</th><th className="p-3">n</th><th className="p-3">χ² (df)</th><th className="p-3">p mentah</th><th className="p-3">p Holm</th><th className="p-3">Cramér’s V</th><th className="p-3">Semakan andaian</th></tr></thead><tbody>{associations.map((result) => <tr key={String(result.field)} className="border-t even:bg-slate-50"><td className="p-3 font-bold">{result.label}<span className="block text-[10px] font-normal text-slate-400">{result.categories} kategori</span></td><td className="p-3">{result.n}</td><td className="p-3">{result.chiSquare.toFixed(2)} ({result.degreesOfFreedom})</td><td className="p-3">{formatP(result.pValue)}</td><td className={`p-3 font-black ${result.adjustedPValue < .05 ? "text-neon" : ""}`}>{formatP(result.adjustedPValue)}</td><td className="p-3">{result.cramerV.toFixed(3)}<span className="block text-[10px] text-slate-400">{effectLabel(result.cramerV)}</span></td><td className="p-3">{result.minimumExpected < 5 ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">Semak sel kecil</span> : <span className="rounded-full bg-teal/10 px-2 py-1 text-xs font-bold text-teal">Memadai</span>}<span className="mt-1 block text-[10px] text-slate-400">Min. jangkaan {result.minimumExpected.toFixed(1)}</span></td></tr>)}</tbody></table></div>
+    </div>
+    <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+      <div className="panel p-5"><p className="eyebrow">Anggaran kesan tidak terlaras</p><h3 className="mt-1 text-lg font-black">Odds ratio status bekerja</h3><p className="mt-1 text-xs text-slate-500">Garis menunjukkan 95% selang keyakinan. Garis rujukan OR=1 bermaksud tiada perbezaan odds.</p><div className="mt-7 space-y-8">{oddsRatios.map((result) => <ForestRow key={result.name} result={result} />)}</div><p className="mt-7 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-500">Anggaran ini belum dilaraskan untuk program, kohort, umur, negeri atau kelayakan. Gunakan regresi logistik multivariat bagi laporan kajian sebenar.</p></div>
+      <div className="panel p-5"><p className="eyebrow">Hierarki bukti</p><h3 className="mt-1 text-lg font-black">Model seterusnya</h3><div className="mt-4 space-y-3"><ModelStep number="01" title="Regresi logistik" detail="Status bekerja dengan pelarasan profil, program, institusi dan kohort." /><ModelStep number="02" title="Padanan pekerjaan" detail="Regresi ordinal; uji andaian proportional odds sebelum tafsiran." /><ModelStep number="03" title="Pendapatan" detail="Regresi kuantil median dan bootstrap 95% CI bagi gaji positif." /><ModelStep number="04" title="Pengesahan S01–S15" detail="Korelasi polikorik, EFA/CFA dan McDonald’s omega sebelum skor domain." /></div></div>
+    </div>
+    <div className="grid gap-5 lg:grid-cols-2"><div className="panel p-5"><h3 className="font-black">Peraturan interpretasi</h3><ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600"><li>• Laporkan saiz kesan dan 95% CI, bukan nilai-p sahaja.</li><li>• Gunakan kategori rujukan yang dinyatakan secara eksplisit.</li><li>• Jika jangkaan sel rendah, pertimbang Fisher’s exact atau gabungan kategori berasaskan teori.</li><li>• Jangan menggabungkan kategori semata-mata untuk mencapai signifikan.</li></ul></div><div className="panel p-5"><h3 className="font-black">Had analisis</h3><ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600"><li>• Reka bentuk keratan rentas tidak membuktikan arah kausal.</li><li>• Penapis global mengubah sampel dan semua keputusan ujian.</li><li>• OR bivariat boleh dipengaruhi faktor perancu.</li><li>• Domain S01–S15 kekal pengelompokan cadangan, bukan konstruk disahkan.</li></ul></div></div>
+  </Module>;
+}
+
+function ForestRow({ result }: { result: ReturnType<typeof employmentOddsRatio> }) {
+  const min = .25; const max = 4;
+  const position = (value: number) => Math.max(0, Math.min(100, (Math.log(value) - Math.log(min)) / (Math.log(max) - Math.log(min)) * 100));
+  const left = position(result.lower); const right = position(result.upper); const point = position(result.oddsRatio); const reference = position(1);
+  return <div><div className="mb-2 flex flex-wrap items-end justify-between gap-2"><div><strong>{result.name}</strong><span className="ml-2 text-xs text-slate-500">{result.definition}; n={result.exposedN} vs {result.referenceN}</span></div><span className="text-sm font-black">OR {result.oddsRatio.toFixed(2)} <span className="font-normal text-slate-500">[{result.lower.toFixed(2)}, {result.upper.toFixed(2)}], p={formatP(result.pValue, false)}</span></span></div><div className="relative h-8"><div className="absolute inset-x-0 top-3 h-1 rounded bg-slate-100" /><div className="absolute top-0 h-7 w-px bg-slate-400" style={{ left: `${reference}%` }} /><div className="absolute top-[10px] h-2 rounded bg-neon/50" style={{ left: `${left}%`, width: `${Math.max(1, right - left)}%` }} /><div className="absolute top-2 h-3 w-3 -translate-x-1/2 rotate-45 bg-neon" style={{ left: `${point}%` }} /><span className="absolute left-0 top-5 text-[9px] text-slate-400">0.25</span><span className="absolute top-5 -translate-x-1/2 text-[9px] text-slate-400" style={{ left: `${reference}%` }}>1.0</span><span className="absolute right-0 top-5 text-[9px] text-slate-400">4.0</span></div></div>;
+}
+
+function ModelStep({ number, title, detail }: { number: string; title: string; detail: string }) { return <div className="flex gap-3 rounded-xl border border-slate-100 p-3"><span className="text-lg font-black text-neon">{number}</span><div><strong className="text-sm">{title}</strong><p className="mt-1 text-xs leading-5 text-slate-500">{detail}</p></div></div>; }
+function formatP(value: number, includePrefix = true) { const formatted = value < .001 ? "<0.001" : value.toFixed(3); return includePrefix ? formatted : formatted; }
+function effectLabel(value: number) { return value < .1 ? "Sangat kecil" : value < .3 ? "Kecil" : value < .5 ? "Sederhana" : "Besar"; }
 
 function Research({ records, allRecords }: { records: TvetRecord[]; allRecords: TvetRecord[] }) {
   const validation = validateRecords(allRecords); const trend = cohortTrend(records); const table = crossTab(records, "institution_type", "employment_status");

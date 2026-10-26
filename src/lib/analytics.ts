@@ -92,3 +92,133 @@ export function automatedInsights(records: TvetRecord[]): string[] {
     barrier ? `Halangan utama paling kerap dilaporkan ialah ${barrier.name.toLowerCase()} (${barrier.value} responden).` : "",
   ].filter(Boolean);
 }
+
+function logGamma(value: number): number {
+  const coefficients = [676.5203681218851, -1259.1392167224028, 771.3234287776531, -176.6150291621406, 12.507343278686905, -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7];
+  if (value < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * value)) - logGamma(1 - value);
+  const z = value - 1;
+  let x = 0.9999999999998099;
+  coefficients.forEach((coefficient, index) => { x += coefficient / (z + index + 1); });
+  const t = z + coefficients.length - 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+function regularizedGammaQ(shape: number, x: number): number {
+  if (x < 0 || shape <= 0) return Number.NaN;
+  if (x === 0) return 1;
+  const epsilon = 1e-14;
+  if (x < shape + 1) {
+    let sum = 1 / shape;
+    let term = sum;
+    let current = shape;
+    for (let index = 1; index <= 200; index++) {
+      current += 1;
+      term *= x / current;
+      sum += term;
+      if (Math.abs(term) < Math.abs(sum) * epsilon) break;
+    }
+    const p = sum * Math.exp(-x + shape * Math.log(x) - logGamma(shape));
+    return Math.max(0, Math.min(1, 1 - p));
+  }
+  let b = x + 1 - shape;
+  let c = 1 / 1e-30;
+  let d = 1 / b;
+  let h = d;
+  for (let index = 1; index <= 200; index++) {
+    const an = -index * (index - shape);
+    b += 2;
+    d = an * d + b;
+    if (Math.abs(d) < 1e-30) d = 1e-30;
+    c = b + an / c;
+    if (Math.abs(c) < 1e-30) c = 1e-30;
+    d = 1 / d;
+    const delta = d * c;
+    h *= delta;
+    if (Math.abs(delta - 1) < epsilon) break;
+  }
+  return Math.max(0, Math.min(1, Math.exp(-x + shape * Math.log(x) - logGamma(shape)) * h));
+}
+
+export type AssociationResult = {
+  field: keyof TvetRecord;
+  label: string;
+  n: number;
+  categories: number;
+  chiSquare: number;
+  degreesOfFreedom: number;
+  pValue: number;
+  adjustedPValue: number;
+  cramerV: number;
+  minimumExpected: number;
+};
+
+export function chiSquareEmployment(records: TvetRecord[], field: keyof TvetRecord, label: string): AssociationResult {
+  const usable = records.filter((record) => record[field] && record.employment_status);
+  const categories = [...new Set(usable.map((record) => record[field]))];
+  const table = categories.map((category) => {
+    const rows = usable.filter((record) => record[field] === category);
+    const employed = rows.filter(isEmployed).length;
+    return [employed, rows.length - employed];
+  });
+  const columnTotals = [0, 1].map((column) => table.reduce((total, row) => total + row[column], 0));
+  const n = usable.length;
+  let chiSquare = 0;
+  let minimumExpected = Number.POSITIVE_INFINITY;
+  table.forEach((row) => row.forEach((observed, column) => {
+    const expected = n ? row.reduce((a, b) => a + b, 0) * columnTotals[column] / n : 0;
+    minimumExpected = Math.min(minimumExpected, expected);
+    if (expected > 0) chiSquare += (observed - expected) ** 2 / expected;
+  }));
+  const degreesOfFreedom = Math.max(0, categories.length - 1);
+  const pValue = degreesOfFreedom ? regularizedGammaQ(degreesOfFreedom / 2, chiSquare / 2) : 1;
+  return {
+    field, label, n, categories: categories.length, chiSquare, degreesOfFreedom, pValue,
+    adjustedPValue: pValue,
+    cramerV: n ? Math.sqrt(chiSquare / n) : 0,
+    minimumExpected: Number.isFinite(minimumExpected) ? minimumExpected : 0,
+  };
+}
+
+export function adjustHolm<T extends { pValue: number }>(results: T[]): Array<T & { adjustedPValue: number }> {
+  const sorted = results.map((result, index) => ({ result, index })).sort((a, b) => a.result.pValue - b.result.pValue);
+  const adjusted = new Array<number>(results.length);
+  let previous = 0;
+  sorted.forEach((entry, rank) => {
+    const value = Math.min(1, entry.result.pValue * (results.length - rank));
+    previous = Math.max(previous, value);
+    adjusted[entry.index] = previous;
+  });
+  return results.map((result, index) => ({ ...result, adjustedPValue: adjusted[index] }));
+}
+
+function normalCdf(value: number): number {
+  const sign = value < 0 ? -1 : 1;
+  const x = Math.abs(value) / Math.sqrt(2);
+  const t = 1 / (1 + 0.3275911 * x);
+  const erf = sign * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x));
+  return 0.5 * (1 + erf);
+}
+
+export type OddsRatioResult = { name: string; definition: string; oddsRatio: number; lower: number; upper: number; pValue: number; exposedN: number; referenceN: number };
+
+export function employmentOddsRatio(records: TvetRecord[], name: string, definition: string, exposed: (record: TvetRecord) => boolean, reference: (record: TvetRecord) => boolean): OddsRatioResult {
+  const exposedRows = records.filter(exposed);
+  const referenceRows = records.filter(reference);
+  let a = exposedRows.filter(isEmployed).length;
+  let b = exposedRows.length - a;
+  let c = referenceRows.filter(isEmployed).length;
+  let d = referenceRows.length - c;
+  if ([a, b, c, d].some((value) => value === 0)) { a += 0.5; b += 0.5; c += 0.5; d += 0.5; }
+  const oddsRatio = (a * d) / (b * c);
+  const standardError = Math.sqrt(1 / a + 1 / b + 1 / c + 1 / d);
+  const logOdds = Math.log(oddsRatio);
+  const z = standardError ? logOdds / standardError : 0;
+  return {
+    name, definition, oddsRatio,
+    lower: Math.exp(logOdds - 1.96 * standardError),
+    upper: Math.exp(logOdds + 1.96 * standardError),
+    pValue: 2 * (1 - normalCdf(Math.abs(z))),
+    exposedN: exposedRows.length,
+    referenceN: referenceRows.length,
+  };
+}

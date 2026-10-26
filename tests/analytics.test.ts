@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyFilters, median, metrics } from "../src/lib/analytics";
+import { adjustHolm, applyFilters, chiSquareEmployment, employmentOddsRatio, median, metrics } from "../src/lib/analytics";
 import { blankFilters, SCHEMA_FIELDS, TvetRecord } from "../src/lib/schema";
 
 function record(overrides: Partial<TvetRecord> = {}): TvetRecord {
@@ -25,5 +25,39 @@ describe("penapis global", () => {
     const filters = { ...blankFilters(), graduation_year: "2024", state: "Kedah" };
     const rows = [record(), record({ state: "Perak" }), record({ graduation_year: "2023" })];
     expect(applyFilters(rows, filters)).toHaveLength(1);
+  });
+});
+
+describe("analisis inferensi", () => {
+  it("mengira khi kuasa dua dan Cramér's V bagi jadual 2x2", () => {
+    const rows = [
+      record({ programme: "Program A", employment_status: "Bekerja sepenuh masa" }),
+      record({ programme: "Program A", employment_status: "Bekerja sendiri" }),
+      record({ programme: "Program B", employment_status: "Tidak bekerja, sedang mencari pekerjaan" }),
+      record({ programme: "Program B", employment_status: "Tidak bekerja, tidak sedang mencari pekerjaan" }),
+    ];
+    const result = chiSquareEmployment(rows, "programme", "Program");
+    expect(result.chiSquare).toBeCloseTo(4);
+    expect(result.degreesOfFreedom).toBe(1);
+    expect(result.pValue).toBeCloseTo(0.0455, 3);
+    expect(result.cramerV).toBeCloseTo(1);
+  });
+
+  it("melaraskan nilai-p menggunakan kaedah Holm", () => {
+    const adjusted = adjustHolm([{ pValue: .01 }, { pValue: .04 }, { pValue: .03 }]);
+    expect(adjusted.map((item) => item.adjustedPValue)).toEqual([.03, .06, .06]);
+  });
+
+  it("mengira odds ratio dan selang keyakinan", () => {
+    const rows = [
+      ...Array.from({ length: 8 }, () => record({ internship: "Ya", employment_status: "Bekerja sepenuh masa" })),
+      ...Array.from({ length: 2 }, () => record({ internship: "Ya", employment_status: "Tidak bekerja, sedang mencari pekerjaan" })),
+      ...Array.from({ length: 4 }, () => record({ internship: "Tidak", employment_status: "Bekerja sepenuh masa" })),
+      ...Array.from({ length: 6 }, () => record({ internship: "Tidak", employment_status: "Tidak bekerja, sedang mencari pekerjaan" })),
+    ];
+    const result = employmentOddsRatio(rows, "Latihan", "Ya vs Tidak", (row) => row.internship === "Ya", (row) => row.internship === "Tidak");
+    expect(result.oddsRatio).toBeCloseTo(6);
+    expect(result.lower).toBeLessThan(result.oddsRatio);
+    expect(result.upper).toBeGreaterThan(result.oddsRatio);
   });
 });
